@@ -17,7 +17,7 @@ blastn -db $2/db -query $3 -outfmt '6 qseqid sseqid evalue score qgi bitscore le
 ;;
 
 'wu-blast')
-wu-blastn $2/db $3 -mformat=2 -e 0.00001 -cpus 1 -filter=seg -lcfilter
+wu-blastn $2/db $3 -mformat=2 -e 0.00001 -cpus 1 -filter=seg -lcfilter -novalidctxok
 ;;
 
 *) echo "Not a valid BLAST strategy: $1"; exit 1
