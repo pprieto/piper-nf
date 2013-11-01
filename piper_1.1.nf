@@ -337,6 +337,51 @@ task ('exonerate') {
     """
 }
 
+
+/* temp
+// use a set since there should be not repetition
+allQueryIDs = new HashSet()
+// the folder where store the all the query sequences as files
+File queryEntries = cacheableDir(queryFile)
+log.debug "Folder queryEntries: ${queryEntries}"
+*/
+
+queryFile.chunkFasta() { String chunk ->
+    // get sequence 'queryId'
+    String queryId = chunk.readLines()[0].replaceAll( /^>(\S*).*$/, '$1' )
+    // add the 'queryId' to the list
+    allQueryIDs << queryId
+    // store the chunk to a file named as the 'queryId'
+    def fileEntry = new File(queryEntries, queryId)
+    if( fileEntry.isEmpty() ) {
+        fileEntry.text = chunk
+    }
+}
+#####
+
+task ('reciprocal') {
+    input exonerateOut
+    input exonerateGtf
+    output '*.br.fa': orthologOut
+    output '*.br.gtf': orthologGtf
+    output '*.all.fa': homologOut
+    output '*.all.gtf': homologGtf
+
+    """
+    echo "blast strategy: ${params.blastStrategy}"
+    SPECIE=${exonerateOut.baseName}
+    echo "specie: $SPECIE"
+    echo "query_gtf: ${params.queryGtf}"
+
+    orthologNF.pl -query exonerateOut -db ${allGenomes[$SPECIE].blast_db} -referenceGtf -configLine -blastName ${params.blastStrategy}
+    if [[ ${params.exonerateMode} ne 'ortholog' ]]
+    then
+        cat exonerateOut > homologOut
+        cat exonerateGtf > homologGtf
+    fi
+    """
+}
+
 /*
  * post-process 'exonerate' result
  */
