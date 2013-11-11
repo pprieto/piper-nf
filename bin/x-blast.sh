@@ -13,11 +13,11 @@ set -u
 
 case "$1" in
 'ncbi-blast')
-blastn -db $2/db -query $3 -outfmt '6 qseqid sseqid evalue score qgi bitscore length nident positive mismatch pident ppos qacc gaps gaopen qaccver qlen qframe qstart qend sframe sstart send'
+blastn -db $2/db -query $3 -evalue 0.00001 -word_size 7 -gapextend 10 -gapopen 20 -reward 5 -penalty -4  -outfmt '6 qseqid sseqid evalue score qgi bitscore length nident positive mismatch pident ppos qacc gaps gaopen qaccver qlen qframe qstart qend sframe sstart send'
 ;;
 
 'wu-blast')
-wu-blastn $2/db $3 -mformat=2 -e 0.00001 -cpus 1 -filter=seg -lcfilter -novalidctxok
+wu-blastn $2/db $3 -mformat=2 W=7 M=5 N=-4 Q=20 R=10 -e 0.00001 -cpus 1 -filter=seg -lcfilter -errors
 ;;
 
 *) echo "Not a valid BLAST strategy: $1"; exit 1
