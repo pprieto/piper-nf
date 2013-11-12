@@ -330,7 +330,6 @@ task ('exonerate') {
     input exonerate_in
     output '*.fa': exonerateOut
     output '*.gtf': exonerateGtf
-    output '*.bh': homologOut
     
     """
     specie='${exonerate_in.specie}'
@@ -348,13 +347,13 @@ task ('exonerate') {
 /*
  * post-process 'exonerate' result
  */
-homologOut      = channel()
-normalizedFasta = channel()
-normalizedGtf = channel()
-normalizationDone = val()
-dir = tempDir()
-log.debug "Folder exonerateHits: ${dir}"
+homologOut          = channel()
+normalizedFasta     = channel()
+normalizedGtf       = channel()
+normalizationDone   = val()
+dir                 = tempDir()
 
+log.debug "Folder exonerateHits: ${dir}"
 
 def foo() {
     normalizationDone << 1
@@ -374,6 +373,8 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
 
     def specie = fasta.baseName
     def replace = []
+
+    def newFasta = cacheableFile( fasta )
 
     fasta.chunkFasta(autoClose:false) { seq ->
  
@@ -414,10 +415,17 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
         file << sequence
         file << '\n'
 
+        newFasta << ">${queryId}_${hitName}${extra}\n"
+        newFasta << sequence
+        newFasta << '\n'
     }
+    homologOut << newFasta
 
     // normalizing hitNames
     if( replace ) {
+        // normalize fasta
+
+        // normalize gtf
         def str = gtf.text
         replace?.each {
             log.debug "Replacing hitName: $it in GTF file: $gtf"
@@ -436,22 +444,46 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
     normalizedGtf << gtf
 }
 
-orthologOut = channel()
+/*
+ *  Copy the fasta of the 1-to-1 orthologs
+ */
+
+resultDir = file(params.resultDir)
+resultDir.with {
+    if( isNotEmpty() ) { deleteDir() }
+    mkdirs()
+}
+
+if( !fastaPath.mkdirs() ) {
+    exit 1, "Cannot create alignments path: $fastaPath -- check file system permissions"
+}
+
+homolog2Blast   = channel()
+
+homologOut.each { fastaFile ->
+    if ( fastaFile.size() == 0 ) return
+    def name = fastaFile.name
+    def targetFile = new File(fastaPath, name)
+    targetFile << fastaFile.text
+    homolog2Blast << fastaFile
+}
+
+orthologOut     = channel()
 
 task ('orthologs') {
-    input homologOut
+    input homolog2Blast
     output '*.orthologs.fa' :orthologOut
 
     """
     set -e
-    specie='${homologOut.baseName}'
+    specie='${homolog2Blast.baseName}'
     touch ${specie}.orthologs.fa
     reference_gtf=${refAbsPath}
 
     if [[ $reference_gtf != 'null' ]]
     then
         ## split the fasta in a file for each sequence 'seq_*'
-        ${split_cmd} $homologOut '%^>%' '/^>/' '{*}' -f seq_ -n 5 -s
+        ${split_cmd} $homolog2Blast '%^>%' '/^>/' '{*}' -f seq_ -n 5 -s
 
         ## rename and move to the target folder
         for x in seq_*; do
@@ -474,38 +506,15 @@ task ('orthologs') {
     """
 }
 
-
-fasta2align = channel()
-
-/* Copy the fasta of the 1-to-1 orthologs */
-resultDir = file(params.resultDir)
-resultDir.with {
-    if( isNotEmpty() ) { deleteDir() }
-    mkdirs()
-}
-
-if( !fastaPath.mkdirs() ) {
-    exit 1, "Cannot create alignments path: $fastaPath -- check file system permissions"
-}
-
-normalizedFasta.each{ mfaFile ->
-    if ( mfaFile.size() == 0 ) return
-
-    def name = mfaFile.name
-    def targetFile = new File(fastaPath, name)
-    targetFile << mfaFile.text
-    fasta2align << mfaFile
-}
-
 alignment = channel()
 
 task('align') {
     input normalizationDone
-    input fasta2align
+    input normalizedFasta
     output '*.aln': alignment
 
     """
-    t_coffee -method ${params.alignStrategy} -in ${fasta2align} -n_core 1
+    t_coffee -method ${params.alignStrategy} -in ${normalizedFasta} -n_core 1
     """
 }
 
@@ -542,13 +551,6 @@ merge('similarity') {
     t_coffee -other_pg seq_reformat -in $alignme -output sim > \$baseName
 
     """
-}
-
-orthologOut.each { sourceFile ->
-    if ( sourceFile.size() == 0 ) return
-    def name = sourceFile.name
-    def targetFile = new File(fastaPath, name)
-    targetFile << sourceFile.text
 }
 
 /* Copy the GFT files produces by the Exonerate steps into the result (current) folder */
