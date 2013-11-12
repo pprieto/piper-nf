@@ -13,7 +13,7 @@ set -u
 
 case "$1" in
 'ncbi-blast')
-blastn -db $2/db -query $3 -evalue 0.00001 -word_size 7 -gapextend 10 -gapopen 20 -reward 5 -penalty -4  -outfmt '6 qseqid sseqid evalue score qgi bitscore length nident positive mismatch pident ppos qacc gaps gaopen qaccver qlen qframe qstart qend sframe sstart send'
+blastn -db $2/db -query $3 -evalue 0.00001 -word_size 7  -outfmt '6 qseqid sseqid evalue score qgi bitscore length nident positive mismatch pident ppos qacc gaps gaopen qaccver qlen qframe qstart qend sframe sstart send'
 ;;
 
 'wu-blast')
