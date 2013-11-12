@@ -51,19 +51,22 @@ params.alignStrategy = 'slow_pair'      // defines the T-Coffee alignment method
 params.exonerateSuccess = '1'
 params.exonerateMode = 'exhaustive'
 params.exonerateChunkSize = 200
-
+params.referenceGtf = null
 
 // these parameters are mutually exclusive
 // Input genome can be specified by
 // - genomes-file: a file containing the list of genomes FASTA to be processed
 // - genomes-list: a comma separated list of genomes FASTA file
 // - genomes-folder: a directory containing a folder for each genome FASTA file
-params['genomes-file'] = null
+//params['genomes-file'] = null
 params['genomes-list'] = null
 params['genomes-folder'] = "tutorial/genomes/"
 
-queryFile = file(params.query)
-dbPath = file(params.genomesDb)
+queryFile   = file(params.query)
+dbPath      = file(params.genomesDb)
+alnPath     = file(params.resultDir+"/aln")
+gtfPath     = file(params.resultDir+"/gtf")
+fastaPath   = file(params.resultDir+"/fasta")
 
 if( !dbPath.exists() ) {
     log.warn "Creating genomes-db path: $dbPath"
@@ -86,6 +89,10 @@ log.info "exonerate-chunk-size: ${params.exonerateChunkSize}"
 log.info "pool-size           : ${config.poolSize}"
 log.info "\n"
 
+/* Define path to reference Gtf */
+if( params['referenceGtf']) {
+    refAbsPath = file(params.referenceGtf).absoluteFile
+}
 /*
  * Find out all the genomes files in the specified directory.
  *
@@ -111,7 +118,7 @@ if( params['genomes-file'] ) {
         exit 1, "Not a valid input genomes descriptor file: ${genomesFile}"
     }
 
-    allGenomes = parseGenomesFile(dbPath, genomesFile, params.blastStrategy)
+    allGenomes = parseGenomesFile(dbPath, genomesFile, params.blastStrategy, params.referenceGtf)
 }
 
 else if( params['genomes-list'] ) {
@@ -241,9 +248,7 @@ task('format') {
         done
 
     fi
-
     echo $NAME > blastName
-
     """
 }
 
@@ -256,16 +261,16 @@ blastId = channel()
 blastQuery = channel()
 
 blastName.each {
-
     def name = it.text.trim()
-    querySplits.eachFile { chunk ->
-        log.info "Blasting > $name - chunk: $chunk"
-        synchronized(this) {
-            blastId << name
-            blastQuery << chunk.absoluteFile
+    if(name!="reference") {
+        querySplits.eachFile { chunk ->
+            log.info "Blasting > $name - chunk: $chunk"
+            synchronized(this) {
+                blastId << name
+                blastQuery << chunk.absoluteFile
+            }
         }
     }
-
 }
 
 
@@ -318,13 +323,14 @@ operator( inputs: [exonerateId, exonerateQuery, blastResult], outputs: [exonerat
  * Collect the BLAST output chunks and apply the 'exonerate' function
  */
 
-exonerateOut = channel()
-exonerateGtf = channel()
+exonerateOut    = channel()
+exonerateGtf    = channel()
 
 task ('exonerate') {
     input exonerate_in
     output '*.fa': exonerateOut
     output '*.gtf': exonerateGtf
+    output '*.bh': homologOut
     
     """
     specie='${exonerate_in.specie}'
@@ -334,58 +340,15 @@ task ('exonerate') {
 
     mv chunk.fa \${specie}.fa
     mv chunk.ex.gtf \${specie}.ex.gtf
+
     """
 }
 
-
-/* temp
-// use a set since there should be not repetition
-allQueryIDs = new HashSet()
-// the folder where store the all the query sequences as files
-File queryEntries = cacheableDir(queryFile)
-log.debug "Folder queryEntries: ${queryEntries}"
-*/
-
-queryFile.chunkFasta() { String chunk ->
-    // get sequence 'queryId'
-    String queryId = chunk.readLines()[0].replaceAll( /^>(\S*).*$/, '$1' )
-    // add the 'queryId' to the list
-    allQueryIDs << queryId
-    // store the chunk to a file named as the 'queryId'
-    def fileEntry = new File(queryEntries, queryId)
-    if( fileEntry.isEmpty() ) {
-        fileEntry.text = chunk
-    }
-}
-#####
-
-task ('reciprocal') {
-    input exonerateOut
-    input exonerateGtf
-    output '*.br.fa': orthologOut
-    output '*.br.gtf': orthologGtf
-    output '*.all.fa': homologOut
-    output '*.all.gtf': homologGtf
-
-    """
-    echo "blast strategy: ${params.blastStrategy}"
-    SPECIE=${exonerateOut.baseName}
-    echo "specie: $SPECIE"
-    echo "query_gtf: ${params.queryGtf}"
-
-    orthologNF.pl -query exonerateOut -db ${allGenomes[$SPECIE].blast_db} -referenceGtf -configLine -blastName ${params.blastStrategy}
-    if [[ ${params.exonerateMode} ne 'ortholog' ]]
-    then
-        cat exonerateOut > homologOut
-        cat exonerateGtf > homologGtf
-    fi
-    """
-}
 
 /*
  * post-process 'exonerate' result
  */
-
+homologOut      = channel()
 normalizedFasta = channel()
 normalizedGtf = channel()
 normalizationDone = val()
@@ -407,7 +370,7 @@ def listener = new DataflowEventAdapter() {
 
 Multiset hitSet = HashMultiset.create()
 
-operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normalizedGtf], maxForks: 1, listeners: [listener] ) { fasta, gtf ->
+operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normalizedGtf, homologOut], maxForks: 1, listeners: [listener] ) { fasta, gtf ->
 
     def specie = fasta.baseName
     def replace = []
@@ -473,50 +436,134 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
     normalizedGtf << gtf
 }
 
+orthologOut = channel()
 
-alignment = channel()
-
-task('align') {
-    input normalizationDone
-    input normalizedFasta
-    output '*.aln': alignment
+task ('orthologs') {
+    input homologOut
+    output '*.orthologs.fa' :orthologOut
 
     """
-    t_coffee -method ${params.alignStrategy} -in ${normalizedFasta} -n_core 1
+    set -e
+    specie='${homologOut.baseName}'
+    touch ${specie}.orthologs.fa
+    reference_gtf=${refAbsPath}
+
+    if [[ $reference_gtf != 'null' ]]
+    then
+        ## split the fasta in a file for each sequence 'seq_*'
+        ${split_cmd} $homologOut '%^>%' '/^>/' '{*}' -f seq_ -n 5 -s
+
+        ## rename and move to the target folder
+        for x in seq_*; do
+
+            x-ortholog.sh '${params.blastStrategy}' $dbPath/reference/${params.blastStrategy}-db $x > bestResult
+            cp bestResult best$x
+
+            QUERY=`grep '>' $x | ${sed_cmd} -r 's/^>(.*)_hit\\d*.*\$/\\1/'`
+            grep "\\"$QUERY\\"" $reference_gtf > query_gtf
+            cp query_gtf gtf$x
+            overlap.pl bestResult query_gtf | grep -w 1  | sort | uniq > overlap
+            cp overlap overlap$x
+            check=`cat overlap`
+            if [[ $check -eq 1 ]]
+            then
+                mv $x ${specie}.orthologs.fa
+            fi
+        done
+    fi
     """
 }
 
 
-similarity = channel()
+fasta2align = channel()
 
-merge('similarity') {
-    input alignment
-    output '*': similarity
-
-    """
-    baseName="$alignment.baseName"
-    t_coffee -other_pg seq_reformat -in $alignment -output sim > \$baseName
-    """
-}
-
-/*
- * Copy the GFT files produces by the Exonerate steps into the result (current) folder
- */
-
+/* Copy the fasta of the 1-to-1 orthologs */
 resultDir = file(params.resultDir)
 resultDir.with {
     if( isNotEmpty() ) { deleteDir() }
     mkdirs()
 }
 
+if( !fastaPath.mkdirs() ) {
+    exit 1, "Cannot create alignments path: $fastaPath -- check file system permissions"
+}
+
+normalizedFasta.each{ mfaFile ->
+    if ( mfaFile.size() == 0 ) return
+
+    def name = mfaFile.name
+    def targetFile = new File(fastaPath, name)
+    targetFile << mfaFile.text
+    fasta2align << mfaFile
+}
+
+alignment = channel()
+
+task('align') {
+    input normalizationDone
+    input fasta2align
+    output '*.aln': alignment
+
+    """
+    t_coffee -method ${params.alignStrategy} -in ${fasta2align} -n_core 1
+    """
+}
+
+/*
+ * Create results directory to save the files
+ */
+
+if( !alnPath.mkdirs() ) {
+    exit 1, "Cannot create alignments path: $alnPath -- check file system permissions"
+}
+
+/*
+ * Copy all the MSAs to results
+ */
+alignme = channel()
+
+alignment.each{ alnFile ->
+    if ( alnFile.size() == 0 ) return
+
+    def name = alnFile.name
+    def targetFile = new File(alnPath, name)
+    targetFile << alnFile.text
+    alignme << alnFile
+}
+
+similarity = channel()
+
+merge('similarity') {
+    input alignme
+    output '*': similarity
+
+    """
+    baseName="$alignme.baseName"
+    t_coffee -other_pg seq_reformat -in $alignme -output sim > \$baseName
+
+    """
+}
+
+orthologOut.each { sourceFile ->
+    if ( sourceFile.size() == 0 ) return
+    def name = sourceFile.name
+    def targetFile = new File(fastaPath, name)
+    targetFile << sourceFile.text
+}
+
+/* Copy the GFT files produces by the Exonerate steps into the result (current) folder */
+if( !gtfPath.mkdirs() ) {
+    exit 1, "Cannot create alignments path: $alnPath -- check file system permissions"
+}
 
 normalizedGtf.each { sourceFile ->
     if( sourceFile.size() == 0 ) return
 
     def name = sourceFile.name
-    def targetFile = new File(resultDir, name)
+    def targetFile = new File(gtfPath, name)
     targetFile << sourceFile.text
 }
+
 
 simFolder = val()
 similarity.whenBound { file -> if(file instanceof File) simFolder << file.parent }
@@ -543,7 +590,7 @@ simMatrixFile.copyTo( new File(resultDir,'simMatrix.csv') )
 // ----==== utility methods ====----
 
 
-def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
+def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy, String referenceGtf) {
 
     def absPath = dbPath.absoluteFile
     def result = [:]
@@ -569,11 +616,13 @@ def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
             return
         }
 
-        result[ genomeId ] = [
-                genome_fa: new File(path).absoluteFile,
-                chr_db: new File(absPath,"${genomeId}/chr"),
-                blast_db: new File(absPath, "${genomeId}/${blastStrategy}-db")
-            ]
+        if( (genomeId == 'reference' && referenceGtf != null) || (genomeId != 'reference')) {
+                result[ genomeId ] = [
+                        genome_fa: new File(path).absoluteFile,
+                        chr_db: new File(absPath,"${genomeId}/chr"),
+                        blast_db: new File(absPath, "${genomeId}/${blastStrategy}-db")
+                ]
+        }
     }
 
     result
