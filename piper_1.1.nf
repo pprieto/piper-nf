@@ -499,11 +499,18 @@ task ('orthologs') {
             check=`cat overlap`
             if [[ $check -eq 1 ]]
             then
-                mv $x ${specie}.orthologs.fa
+                cat $x >>${specie}.orthologs.fa
             fi
         done
     fi
     """
+}
+
+ortyhologOut.each { fastaFile ->
+    if ( fastaFile.size() == 0 ) return
+    def name = fastaFile.name
+    def targetFile = new File(fastaPath, name)
+    targetFile << fastaFile.text
 }
 
 alignment = channel()
