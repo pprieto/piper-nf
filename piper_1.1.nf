@@ -506,7 +506,7 @@ task ('orthologs') {
     """
 }
 
-ortyhologOut.each { fastaFile ->
+orthologOut.each { fastaFile ->
     if ( fastaFile.size() == 0 ) return
     def name = fastaFile.name
     def targetFile = new File(fastaPath, name)
