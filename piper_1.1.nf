@@ -478,10 +478,10 @@ task ('orthologs') {
     set -e
     specie='${homolog2Blast.baseName}'
     touch ${specie}.orthologs.fa
-    reference_gtf=${refAbsPath}
 
-    if [[ $reference_gtf != 'null' ]]
+    if [[ ${params['referenceGtf']} != 'null' ]]
     then
+        reference_gtf=${refAbsPath}
         ## split the fasta in a file for each sequence 'seq_*'
         ${split_cmd} $homolog2Blast '%^>%' '/^>/' '{*}' -f seq_ -n 5 -s
 
