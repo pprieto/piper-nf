@@ -50,6 +50,11 @@ Pipeline parameters
   * Example: `nextflow piper.nf --query-chunk-size=50`
 
 
+#####exonerate-chunk-size
+  * Number of blast lines splitted in a chunk to run exonerate on them
+  * Example: `nextflow piper_1.1.nf --exonerate-chunk-size=300` 
+
+
 #####result-dir
 
   * The location where the result files are stored.
@@ -62,6 +67,13 @@ Pipeline parameters
   * Which BLAST program to be used, `ncbi-blast` (default) or `wu-blast`
   * Example: `nextflow piper.nf --blast-strategy=wu-blast`
 
+#####referenceGtf
+
+  * Reference annotation including RNA queries which will be used to classify hits as orthologs by 
+    the best reciprocal hit definition.
+  * Please note: need to define the reference genome to perform blast on by adding a line on the genomes-file
+    with the path and `reference` as name
+  * Example: `nextflow piper.nf --reference-Gtf=myReferenceAnnotation.gtf --genomes-file`
 
 Run using Vagrant
 -----------------
@@ -117,6 +129,7 @@ where the pipeline is going to be launched, with the following content:
     task {
       processor='sge'
       queue='<your queue name>'
+      clusterOptions='<specific cluster cmd arguments>'
     }
 
 In doing that, tasks will be executed through the `qsub` SGE command, and so your pipeline will behave like any
@@ -124,6 +137,7 @@ other SGE job script, with the benefit that *Nextflow* will automatically and tr
 synchronisation, file(s) staging/un-staging, etc.
 
 Alternatively the same declaration can be defined in the file `$HOME/.nextflow/config`.
+
 
 Dependencies
 ------------
