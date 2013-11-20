@@ -79,6 +79,7 @@ log.info "P I P E R - RNA mapping pipeline - ver 1.1"
 log.info "=========================================="
 log.info "query               : ${queryFile}"
 log.info "genomes-db          : ${dbPath}"
+log.info "referenceGtf        : ${params.referenceGtf}"
 log.info "query-chunk-size    : ${params.queryChunkSize}"
 log.info "result-dir          : ${params.resultDir}"
 log.info "blast-strategy      : ${params.blastStrategy}"
@@ -87,12 +88,14 @@ log.info "exonerate-success:  : ${params.exonerateSuccess}"
 log.info "exonerate-mode:     : ${params.exonerateMode}"
 log.info "exonerate-chunk-size: ${params.exonerateChunkSize}"
 log.info "pool-size           : ${config.poolSize}"
+log.info "pool-size           : ${config.poolSize}"
 log.info "\n"
 
 /* Define path to reference Gtf */
 if( params['referenceGtf']) {
     refAbsPath = file(params.referenceGtf).absoluteFile
 }
+
 /*
  * Find out all the genomes files in the specified directory.
  *

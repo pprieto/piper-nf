@@ -43,6 +43,7 @@ params.blastStrategy = 'ncbi-blast'
 params.exonerateSuccess = '1'
 params.exonerateMode = 'exhaustive'
 params.alignMethod = 'slow_pair'
+params.referenceGtf = null
 
 
 // these parameters are mutually exclusive
@@ -54,8 +55,11 @@ params['genomes-file'] = null
 params['genomes-list'] = null
 params['genomes-folder'] = "./tutorial/genomes/"
 
-queryFile = file(params.query)
-dbPath = file(params.genomesDb)
+queryFile   = file(params.query)
+dbPath      = file(params.genomesDb)
+alnPath     = file(params.resultDir+"/aln")
+gtfPath     = file(params.resultDir+"/gtf")
+fastaPath   = file(params.resultDir+"/fasta")
 
 if( !dbPath.exists() ) {
     log.warn "Creating genomes-db path: $dbPath"
@@ -74,8 +78,14 @@ log.info "blast-strategy     : ${params.blastStrategy}"
 log.info "exonerate-success  : ${params.exonerateSuccess}"
 log.info "exonerate-mode     : ${params.exonerateMode}"
 log.info "align-method       : ${params.alignMethod}"
+log.info "referenceGtf       : ${params.referenceGtf}"
 log.info "pool-size          : ${config.poolSize}"
 log.info "\n"
+
+/* Define path to reference Gtf */
+if( params['referenceGtf']) {
+    refAbsPath = file(params.referenceGtf).absoluteFile
+}
 
 /*
  * Find out all the genomes files in the specified directory.
@@ -102,7 +112,7 @@ if( params['genomes-file'] ) {
         exit 1, "Not a valid input genomes descriptor file: ${genomesFile}"
     }
 
-    allGenomes = parseGenomesFile(dbPath, genomesFile, params.blastStrategy)
+    allGenomes = parseGenomesFile(dbPath, genomesFile, params.blastStrategy, params.referenceGtf)
 }
 
 else if( params['genomes-list'] ) {
@@ -147,6 +157,7 @@ formatName = allGenomes.keySet()
 
 // create a folder that may be cached, using the 'queryFile' and the number chunks as cache key
 querySplits = cacheableDir([queryFile, params.queryChunkSize])
+log.debug "Folder querySplits: ${querySplits}"
 
 if( querySplits.isEmpty() ) {
     log.info "Splitting query file: $queryFile .."
@@ -390,7 +401,7 @@ simMatrixFile.copyTo( new File(resultDir,'simMatrix.csv') )
 // ----==== utility methods ====----
 
 
-def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
+def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy, String referenceGtf) {
 
     def absPath = dbPath.absoluteFile
     def result = [:]
@@ -416,11 +427,13 @@ def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
             return
         }
 
-        result[ genomeId ] = [
-                genome_fa: new File(path).absoluteFile,
-                chr_db: new File(absPath,"${genomeId}/chr"),
-                blast_db: new File(absPath, "${genomeId}/${blastStrategy}-db")
-            ]
+        if( (genomeId == 'reference' && referenceGtf != null) || (genomeId != 'reference')) {
+            result[ genomeId ] = [
+                    genome_fa: new File(path).absoluteFile,
+                    chr_db: new File(absPath,"${genomeId}/chr"),
+                    blast_db: new File(absPath, "${genomeId}/${blastStrategy}-db")
+                ]
+        }
     }
 
     result
