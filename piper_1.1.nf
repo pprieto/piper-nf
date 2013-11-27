@@ -142,9 +142,6 @@ allGenomes.each { name, entry ->
     }
 }
 
-// get all genomes ID found and put into a list
-formatName = allGenomes.keySet()
-
 
 /*
  * Split the query input file in many small files (chunks).
@@ -156,13 +153,12 @@ formatName = allGenomes.keySet()
 
 // create a folder that may be cached, using the 'queryFile' and the number chunks as cache key
 querySplits = cacheableDir([queryFile, params.queryChunkSize])
-log.debug "Folder querySplits: ${querySplits}"
 
-if( querySplits.isEmpty() ) {
+if( querySplits.empty() ) {
     log.info "Splitting query file: $queryFile .."
     chunkCount=0
     queryFile.chunkFasta( params.queryChunkSize ) { sequence ->
-        def file = new File(querySplits, "seq_${chunkCount++}")
+        def file = querySplits.resolve("seq_${chunkCount++}")
         file.text = sequence
     }
     log.info "Created $chunkCount input chunks to path: ${querySplits}"
@@ -174,15 +170,11 @@ else {
 
 // use a set since there should be not repetition
 allQueryIDs = new HashSet()
-// the folder where store the all the query sequences as files
+
 File queryEntries = cacheableDir(queryFile)
-log.debug "Folder queryEntries: ${queryEntries}"
 
 queryFile.chunkFasta() { String chunk ->
-    // get sequence 'queryId'
-    String queryId = chunk.readLines()[0].replaceAll( /^>(\S*).*$/, '$1' )
-    // add the 'queryId' to the list
-    allQueryIDs << queryId
+    allQueryIDs << chunk.readLines()[0].replaceAll( /^>(\S*).*$/, '$1' )
     // store the chunk to a file named as the 'queryId'
     def fileEntry = new File(queryEntries, queryId)
     if( fileEntry.isEmpty() ) {
@@ -203,9 +195,11 @@ queryFile.chunkFasta() { String chunk ->
 def sed_cmd = (System.properties['os.name'] == 'Mac OS X' ? 'gsed' : 'sed')
 def split_cmd = (System.properties['os.name'] == 'Mac OS X' ? 'gcsplit' : 'csplit')
 
-task('format') {
-    input formatName
-    output blastName
+process format {
+    input :
+    val formatName using allGenomes.keySet()
+    output:
+    val formatName blastName using blastName
     
     """
     set -e
@@ -248,37 +242,19 @@ task('format') {
 }
 
 
-
-/*
- * Iterate over the query chunks and create a pair (genome name, chunk file) for each of them
- */
-blastId = channel()
-blastQuery = channel()
-
-blastName.each {
-
-    def name = it.text.trim()
-    querySplits.eachFile { chunk ->
-        log.info "Blasting > $name - chunk: $chunk"
-        synchronized(this) {
-            blastId << name
-            blastQuery << chunk.absoluteFile
-        }
-    }
-
-}
-
-
 /*
  * Implements the BLAST step
  */
 
-task ('blast') {
-    input blastId
-    input blastQuery
-    output exonerateId
-    output exonerateQuery
-    output blastResult
+process blast {
+    input:
+    each blastId using blastName
+    file blastQuery using (querySplits.listFiles())
+
+    output:
+    val blastId using exonerateId
+    file blastQuery using exonerateQuery
+    file '*.mf2' using blastResult
     
     """
     set -e
@@ -321,10 +297,13 @@ operator( inputs: [exonerateId, exonerateQuery, blastResult], outputs: [exonerat
 exonerateOut = channel()
 exonerateGtf = channel()
 
-task ('exonerate') {
-    input exonerate_in
-    output '*.fa': exonerateOut
-    output '*.gtf': exonerateGtf
+process exonerate {
+    input:
+    val exonerate_in
+
+    output:
+    file '*.fa' using exonerateOut
+    file '*.gtf' using exonerateGtf
     
     """
     specie='${exonerate_in.specie}'
@@ -381,11 +360,11 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
         }
 
         log.debug "Processing queryId: ${queryId}"
-        def file = new File(dir, "${queryId}.mfa")
+        def file = dir.resolve("${queryId}.mfa")
 
         if( !file.exists() ) {
             // the very fist time prepend the sequence in the query file
-            file << new File(queryEntries, queryId).text
+            file << queryEntries.resolve(queryId).text
             // note: the file is bound over the channel here, to be sure
             // to send it out just one time
             normalizedFasta << file
@@ -431,10 +410,13 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
 
 alignment = channel()
 
-task('align') {
-    input normalizationDone
-    input normalizedFasta
-    output '*.aln': alignment
+proces align {
+    input:
+    val normalizationDone
+    file normalizedFasta
+
+    output:
+    file '*.aln' using alignment
 
     """
     t_coffee -method ${params.alignStrategy} -in ${normalizedFasta} -n_core 1
@@ -445,8 +427,11 @@ task('align') {
 similarity = channel()
 
 merge('similarity') {
-    input alignment
-    output '*': similarity
+    input:
+    file alignment
+
+    output:
+    file '*' using similarity joint true
 
     """
     baseName="$alignment.baseName"
@@ -474,15 +459,18 @@ normalizedGtf.each { sourceFile ->
 }
 
 simFolder = val()
-similarity.whenBound { file -> if(file instanceof File) simFolder << file.parent }
 
 /*
  * Compute the similarity Matrix
  */
-task ('matrix') {
+process matrix {
     echo true
-    input simFolder
-    output simMatrix
+
+    input:
+    file similarity
+
+    output:
+    file simMatrix
 
     """
     echo '\n====== Pipe-R sim matrix ======='
@@ -498,7 +486,7 @@ simMatrixFile.copyTo( new File(resultDir,'simMatrix.csv') )
 // ----==== utility methods ====----
 
 
-def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
+def parseGenomesFile(def dbPath, def sourcePath, String blastStrategy) {
 
     def absPath = dbPath.absoluteFile
     def result = [:]
@@ -525,9 +513,9 @@ def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
         }
 
         result[ genomeId ] = [
-                genome_fa: new File(path).absoluteFile,
-                chr_db: new File(absPath,"${genomeId}/chr"),
-                blast_db: new File(absPath, "${genomeId}/${blastStrategy}-db")
+                genome_fa: file(path),
+                chr_db: absPath.resolve("${genomeId}/chr"),
+                blast_db: absPath.resolve("${genomeId}/${blastStrategy}-db")
             ]
     }
 
@@ -536,38 +524,35 @@ def parseGenomesFile(File dbPath, File sourcePath, String blastStrategy) {
 
 
 
-def parseGenomesList(File dbPath, String genomesList, String blastStrategy) {
+def parseGenomesList(def dbPath, String genomesList, String blastStrategy) {
 
     def count=0
     def files = genomesList.split(',').collect { new File(it.trim()).absoluteFile }
     def result = [:]
-    def absPath = dbPath.absoluteFile
 
     files.each { genomeFile ->
 
         def genomeId = "gen${++count}"
         result[ genomeId ] = [
                 genome_fa: genomeFile,
-                chr_db: new File(absPath,"${genomeId}/chr"),
-                blast_db: new File(absPath, "${genomeId}/${blastStrategy}-db")
+                chr_db: dbPath.resolve("${genomeId}/chr"),
+                blast_db: dbPath.resolve("${genomeId}/${blastStrategy}-db")
             ]
-
     }
     result
 }
 
-def parseGenomesFolder(File dbPath, File sourcePath, String blastStrategy) {
+def parseGenomesFolder(def dbPath, def sourcePath, String blastStrategy) {
 
     def result = [:]
-    def absPath = dbPath.absoluteFile
 
     sourcePath.absoluteFile.eachDir { File path ->
         def fasta = path.listFiles().find { File file -> file.name.endsWith('.fa') }
         if( fasta ) {
             result[ path.name ] = [
                     genome_fa: fasta,
-                    chr_db: new File(absPath,"${path.name}/chr"),
-                    blast_db: new File(absPath, "${path.name}/${blastStrategy}-db")
+                    chr_db: absPath.resolve("${path.name}/chr"),
+                    blast_db: absPath.resolve("${path.name}/${blastStrategy}-db")
                 ]
         }
     }
