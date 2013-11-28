@@ -23,6 +23,7 @@ import groovyx.gpars.dataflow.operator.DataflowProcessor
 import com.google.common.collect.Multiset
 import com.google.common.collect.HashMultiset
 import nextflow.util.CacheHelper
+import java.nio.file.Files
 
 
 /* 
@@ -107,7 +108,7 @@ allGenomes = [:]
 // each line represent the path to a genome file
 if( params['genomes-file'] ) {
     def genomesFile = file(params['genomes-file'])
-    if( genomesFile.isEmpty() ) {
+    if( genomesFile.empty() ) {
         exit 1, "Not a valid input genomes descriptor file: ${genomesFile}"
     }
 
@@ -120,7 +121,7 @@ else if( params['genomes-list'] ) {
 
 else if( params['genomes-folder'] ) {
     def sourcePath = file(params['genomes-folder'])
-    if( !sourcePath.exists() || sourcePath.isEmpty() ) {
+    if( !sourcePath.exists() || sourcePath.empty() ) {
         exit 4, "Not a valid input genomes folder: ${sourcePath}"
     }
 
@@ -171,13 +172,15 @@ else {
 // use a set since there should be not repetition
 allQueryIDs = new HashSet()
 
-File queryEntries = cacheableDir(queryFile)
+Path queryEntries = cacheableDir(queryFile)
 
 queryFile.chunkFasta() { String chunk ->
-    allQueryIDs << chunk.readLines()[0].replaceAll( /^>(\S*).*$/, '$1' )
+    String queryId = chunk.readLines()[0].replaceAll( /^>(\S*).*$/, '$1' )
+
+    allQueryIDs << queryId
     // store the chunk to a file named as the 'queryId'
-    def fileEntry = new File(queryEntries, queryId)
-    if( fileEntry.isEmpty() ) {
+    def fileEntry = queryEntries.resolve(queryId)
+    if( fileEntry.empty() ) {
         fileEntry.text = chunk
     }
 }
@@ -199,7 +202,7 @@ process format {
     input :
     val formatName using allGenomes.keySet()
     output:
-    val formatName blastName using blastName
+    val formatName using blastName
     
     """
     set -e
@@ -257,10 +260,7 @@ process blast {
     file '*.mf2' using blastResult
     
     """
-    set -e
-    echo ${blastId} > exonerateId
-    x-blast.sh '${params.blastStrategy}' ${allGenomes[blastId].blast_db} ${blastQuery} > blastResult
-    ln -s ${blastQuery} exonerateQuery
+    x-blast.sh '${params.blastStrategy}' ${allGenomes[blastId].blast_db} ${blastQuery} > ${blastId}.mf2
     """
 
 }
@@ -283,7 +283,7 @@ operator( inputs: [exonerateId, exonerateQuery, blastResult], outputs: [exonerat
         }
 
         // create 3-tuple to feed to 'exonerate' step
-        def id = specieId.text.trim()
+        def id = specieId.trim()
         exonerate_in << [ specie: id, query: fileQuery, chunk: fileChunk, chr_db: allGenomes[id].chr_db ]
     }
 
@@ -293,9 +293,6 @@ operator( inputs: [exonerateId, exonerateQuery, blastResult], outputs: [exonerat
 /*
  * Collect the BLAST output chunks and apply the 'exonerate' function
  */
-
-exonerateOut = channel()
-exonerateGtf = channel()
 
 process exonerate {
     input:
@@ -337,6 +334,11 @@ def listener = new DataflowEventAdapter() {
     public void afterStop(final DataflowProcessor processor) {
         foo()
     }
+
+    public boolean onException(DataflowProcessor processor, java.lang.Throwable e) {
+        e.printStackTrace()
+        return true
+    }
 }
 
 Multiset hitSet = HashMultiset.create()
@@ -361,15 +363,17 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
 
         log.debug "Processing queryId: ${queryId}"
         def file = dir.resolve("${queryId}.mfa")
-
+        log.debug "MFa: ${file}"
         if( !file.exists() ) {
             // the very fist time prepend the sequence in the query file
-            file << queryEntries.resolve(queryId).text
+            log.debug "File created: ${file}"
+            file = Files.createFile(file)
+            file.text = queryEntries.resolve(queryId).text
             // note: the file is bound over the channel here, to be sure
             // to send it out just one time
             normalizedFasta << file
         }
-
+        log.debug "After file exists"
         // update the hit name
         def key = [specie, queryId]
         def count = hitSet.add(key, 1) +1
@@ -402,7 +406,7 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
 
         gtf = newGtf
     }
-
+    log.debug "End of operator"
     // send out the 'gtf' file
     normalizedGtf << gtf
 }
@@ -410,7 +414,7 @@ operator( inputs:[exonerateOut, exonerateGtf], outputs: [normalizedFasta, normal
 
 alignment = channel()
 
-proces align {
+process align {
     input:
     val normalizationDone
     file normalizedFasta
@@ -426,7 +430,7 @@ proces align {
 
 similarity = channel()
 
-merge('similarity') {
+process similarity(merge:true) {
     input:
     file alignment
 
@@ -434,8 +438,7 @@ merge('similarity') {
     file '*' using similarity joint true
 
     """
-    baseName="$alignment.baseName"
-    t_coffee -other_pg seq_reformat -in $alignment -output sim > \$baseName
+    t_coffee -other_pg seq_reformat -in $alignment -output sim > ${alignment.baseName}
     """
 }
 
@@ -445,7 +448,7 @@ merge('similarity') {
 
 resultDir = file(params.resultDir)
 resultDir.with {
-    if( isNotEmpty() ) { deleteDir() }
+    if( !empty() ) { deleteDir() }
     mkdirs()
 }
 
@@ -454,7 +457,7 @@ normalizedGtf.each { sourceFile ->
     if( sourceFile.size() == 0 ) return
 
     def name = sourceFile.name
-    def targetFile = new File(resultDir, name)
+    def targetFile = resultDir.resolve(name)
     targetFile << sourceFile.text
 }
 
@@ -465,7 +468,6 @@ simFolder = val()
  */
 process matrix {
     echo true
-
     input:
     file similarity
 
@@ -474,13 +476,15 @@ process matrix {
 
     """
     echo '\n====== Pipe-R sim matrix ======='
-    sim2matrix.pl -query $queryFile -data_dir $simFolder -genomes_dir $dbPath | tee simMatrix
+    mkdir data
+    mv ${similarity} data
+    sim2matrix.pl -query $queryFile -data_dir data -genomes_dir $dbPath | tee simMatrix
     echo '\n'
     """
 }
 
 simMatrixFile = simMatrix.val
-simMatrixFile.copyTo( new File(resultDir,'simMatrix.csv') )
+simMatrixFile.copyTo( resultDir.resolve('simMatrix.csv') )
 
 
 // ----==== utility methods ====----
@@ -488,7 +492,6 @@ simMatrixFile.copyTo( new File(resultDir,'simMatrix.csv') )
 
 def parseGenomesFile(def dbPath, def sourcePath, String blastStrategy) {
 
-    def absPath = dbPath.absoluteFile
     def result = [:]
 
     // parse the genomes input file files (genome-id, path to genome file)
@@ -514,8 +517,8 @@ def parseGenomesFile(def dbPath, def sourcePath, String blastStrategy) {
 
         result[ genomeId ] = [
                 genome_fa: file(path),
-                chr_db: absPath.resolve("${genomeId}/chr"),
-                blast_db: absPath.resolve("${genomeId}/${blastStrategy}-db")
+                chr_db: dbPath.resolve("${genomeId}/chr"),
+                blast_db: dbPath.resolve("${genomeId}/${blastStrategy}-db")
             ]
     }
 
