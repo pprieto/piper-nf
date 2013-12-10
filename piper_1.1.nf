@@ -67,6 +67,7 @@ dbPath      = file(params.genomesDb)
 alnPath     = file(params.resultDir+"/aln")
 gtfPath     = file(params.resultDir+"/gtf")
 fastaPath   = file(params.resultDir+"/fasta")
+mfaPath     = file(params.resultDir+"/mfa")
 
 if( !dbPath.exists() ) {
     log.warn "Creating genomes-db path: $dbPath"
@@ -536,17 +537,28 @@ if( !alnPath.mkdirs() ) {
     exit 1, "Cannot create alignments path: $alnPath -- check file system permissions"
 }
 
+/* Copy temporary directory with mfa files */
+if ( !mfaPath.mkdirs()) {
+    exit 1, "Cannot create MFA path: $mfaPath -- check file system premissions"
+}
+
 /*
  * Copy all the MSAs to results
  */
 alignme = channel()
 
+
 alignment.each{ alnFile ->
+    def mfaFile = new File(dir, alnFile.baseName+".mfa")
+    if ( mfaFile.size() == 0 ) return
+
+    def targetMfa = new File(mfaPath, mfaFile.name)
+    targetMfa << mfaFile.text
+
     if ( alnFile.size() == 0 ) return
 
-    def name = alnFile.name
-    def targetFile = new File(alnPath, name)
-    targetFile << alnFile.text
+    def targetAln = new File(alnPath, alnFile.name)
+    targetAln << alnFile.text
     alignme << alnFile
 }
 
